@@ -127,7 +127,7 @@ struct ipmb_master {
 	struct ipmi_device_id		ipmi_id;
 	/* Used to register this device as a slave device */
 	struct i2c_client		*client;
-	ipmi_smi_t			intf;
+	struct ipmi_smi			*intf;
 	spinlock_t			lock;
 	struct ipmb_seq_entry		seq_msg_map[IPMB_SEQ_MAX];
 	struct work_struct		ipmb_send_work;
@@ -238,7 +238,7 @@ static int ipmb_send_request(struct ipmb_master *master,
 	return ret;
 }
 
-static int ipmb_start_processing(void *data, ipmi_smi_t intf)
+static int ipmb_start_processing(void *data, struct ipmi_smi *intf)
 {
 	struct ipmb_master *master = data;
 
@@ -255,7 +255,7 @@ static u8 ipmb_checksum1(u8 rs_sa, u8 netfn_rs_lun)
 	return -csum;
 }
 
-static u8 ipmb_checksum(u8 *data, int size, u8 start)
+static u8 ipmb_checksum_offset(u8 *data, int size, u8 start)
 {
 	u8 csum = start;
 
@@ -303,7 +303,7 @@ static void ipmb_error_reply(struct ipmb_master *master,
  * which is present in ipmb_msg and not in ipmb_smi_msg: checksum1,
  * r*_sa, rq_seq_r*_lun and checksum2.
  */
-static u8 ipmi_smi_to_ipmb_len(size_t smi_msg_size)
+static u8 ipmi_smio_ipmb_len(size_t smi_msg_size)
 {
 	return smi_msg_size + 4;
 }
@@ -489,7 +489,7 @@ static void ipmb_send_workfn(struct work_struct *work)
 		return;
 	}
 
-	msg_len = ipmi_smi_to_ipmb_len(smi_msg_size);
+	msg_len = ipmi_smio_ipmb_len(smi_msg_size);
 
 	/* Responder  */
 	ipmb_req_msg.rq.netfn_rs_lun = smi_msg->netfn_lun;
@@ -503,7 +503,7 @@ static void ipmb_send_workfn(struct work_struct *work)
 	memcpy(ipmb_req_msg.rq.payload, smi_msg->payload,
 		ipmb_payload_len((size_t)msg_len));
 	ipmb_req_msg.rq.payload[ipmb_payload_len((size_t)msg_len)] =
-		ipmb_checksum(buf + 2, msg_len - 2, 0);
+		ipmb_checksum_offset(buf + 2, msg_len - 2, 0);
 
 	if (ipmb_send_request(master, &ipmb_req_msg) < 0) {
 		ipmb_free_seq(master, (GET_SEQ(ipmb_req_msg.rq.rq_seq_rq_lun)));
@@ -550,7 +550,7 @@ static void ipmb_send_workfn(struct work_struct *work)
 		return;
 	}
 
-	verify_checksum = ipmb_checksum(buf_rsp, rsp_msg_len,
+	verify_checksum = ipmb_checksum_offset(buf_rsp, rsp_msg_len,
 				(u8)(master->client->addr << 1));
 
 	if (verify_checksum) {
@@ -573,7 +573,7 @@ static void ipmb_send_workfn(struct work_struct *work)
  * It passes request message from ipmitool program
  * to the host's kernel to the receiver via I2C.
  */
-static void ipmb_sender(void *data, struct ipmi_smi_msg *msg)
+static int ipmb_sender(void *data, struct ipmi_smi_msg *msg)
 {
 	struct ipmb_master *master = data;
 	unsigned long flags;
@@ -586,6 +586,8 @@ static void ipmb_sender(void *data, struct ipmi_smi_msg *msg)
 		schedule_work(&master->ipmb_send_work);
 	}
 	spin_unlock_irqrestore(&master->lock, flags);
+
+  return IPMI_CC_NO_ERROR;
 }
 
 static void ipmb_request_events(void *data)
@@ -682,8 +684,7 @@ static unsigned short slave_add = 0x0;
 module_param(slave_add, ushort, 0);
 MODULE_PARM_DESC(slave_add, "The i2c slave address of the responding device");
 
-static int ipmb_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int ipmb_probe(struct i2c_client *client)
 {
 	struct ipmb_master *master;
 	int ret;
@@ -721,7 +722,7 @@ static int ipmb_probe(struct i2c_client *client,
 		return ret;
 
 	ret = ipmi_register_smi(&ipmb_smi_handlers, master,
-				&master->ipmi_id,
+				//&master->ipmi_id,
 				&client->dev,
 				(unsigned char)master->rs_sa);
 
@@ -731,7 +732,7 @@ static int ipmb_probe(struct i2c_client *client,
 	return ret;
 }
 
-static int ipmb_remove(struct i2c_client *client)
+static void ipmb_remove(struct i2c_client *client)
 {
 	struct ipmb_master *master;
 
@@ -739,7 +740,7 @@ static int ipmb_remove(struct i2c_client *client)
 	ipmi_unregister_smi(master->intf);
 	i2c_slave_unregister(client);
 
-	return 0;
+	return;
 }
 
 static const struct i2c_device_id ipmb_i2c_id[] = {
